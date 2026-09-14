@@ -1,4 +1,4 @@
-# 11 Shaft Complex — Tunisi Digital Twin
+# Shaft Complex — Tunisi Digital Twin
 
 Asset & breakdown register for the Tunisi mine's 11 Shaft Complex. Built with React + Vite.
 
