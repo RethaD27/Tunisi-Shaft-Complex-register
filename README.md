@@ -1,19 +1,19 @@
-# Shaft Complex — Tunisi Digital Twin
+# Impala 11 Shaft — Breakdown Register
 
-Asset & breakdown register for the Tunisi mine's 11 Shaft Complex. Built with React + Vite.
+Asset & breakdown register for Impala Platinum's 11 Shaft. Built with React + Vite.
 
 ## What's in this project
 
 ```
-tunisi-app/
+impala-shafts-register/
 ├── index.html          # HTML entry point
 ├── package.json         # dependencies + scripts
 ├── vite.config.js       # build tool config
-├── .env         # copy to .env and fill in your Supabase credentials
+├── .env.example         # copy to .env and fill in your Supabase credentials
 ├── .gitignore
 ├── README.md
 ├── supabase/
-│   └── schema.sql        # run once in Supabase to create the shared table
+│   └── schema.sql        # run once in Supabase to create the shared table + photo bucket
 └── src/
     ├── main.jsx          # React entry point
     ├── App.jsx           # the whole app (tabs, dashboard, log, report form)
@@ -41,7 +41,7 @@ git -v
 ## 2. Run it locally in VS Code
 
 1. Unzip this project folder somewhere on your computer.
-2. Open VS Code, then **File → Open Folder…** and select the `tunisi-app` folder.
+2. Open VS Code, then **File → Open Folder…** and select the `impala-shafts-register` folder.
 3. Open the built-in terminal: **Terminal → New Terminal**.
 4. Install dependencies:
    ```bash
@@ -57,27 +57,27 @@ Edits you make to files in `src/` hot-reload automatically while `npm run dev` i
 
 ## 3. Push it to GitHub
 
-From inside the `tunisi-app` folder (same terminal):
+From inside the `impala-shafts-register` folder (same terminal):
 
 ```bash
 # Turn the folder into a git repo
 git init
 git add .
-git commit -m "Initial commit — Tunisi 11 Shaft Complex register"
+git commit -m "Initial commit — Impala 11 Shaft register"
 
 # Create the GitHub repo (pick ONE of the two options below)
 ```
 
 **Option A — using the GitHub CLI** (`gh`, install from https://cli.github.com):
 ```bash
-gh repo create tunisi-11shaft-register --public --source=. --remote=origin --push
+gh repo create impala-11shaft-register --public --source=. --remote=origin --push
 ```
 
 **Option B — manually on github.com:**
-1. Go to https://github.com/new, name it (e.g. `tunisi-11shaft-register`), don't initialize with a README (you already have one), click **Create repository**.
+1. Go to https://github.com/new, name it (e.g. `impala-11shaft-register`), don't initialize with a README (you already have one), click **Create repository**.
 2. GitHub will show you commands like these — run them in your terminal:
    ```bash
-   git remote add origin https://github.com/YOUR_USERNAME/tunisi-11shaft-register.git
+   git remote add origin https://github.com/YOUR_USERNAME/impala-11shaft-register.git
    git branch -M main
    git push -u origin main
    ```
@@ -109,7 +109,7 @@ To get a genuinely shared, live log — a report submitted on one phone appears 
 ### Step by step
 
 1. **Create a project** at https://supabase.com (free tier is plenty for this). Give it any name and a database password (you won't need the password day-to-day).
-2. **Create the table.** In your project's dashboard: **SQL Editor → New query**, paste in the contents of `supabase/schema.sql` from this repo, and click **Run**. This creates the `kv_store` table, sets up permissive access policies (see the comments in that file for what that means), and turns on realtime for the table.
+2. **Create the table and photo storage.** In your project's dashboard: **SQL Editor → New query**, paste in the contents of `supabase/schema.sql` from this repo, and click **Run**. This creates the `kv_store` table, a `breakdown-photos` storage bucket for photos attached to reports, sets up permissive access policies for both (see the comments in that file for what that means), and turns on realtime for the table. If you already ran an older version of this file before, it's safe to just run the whole thing again — it's written so nothing errors out on things that already exist.
 3. **Grab your API credentials.** In the dashboard: **Settings → API**. Copy:
    - **Project URL**
    - **anon public** key (not the `service_role` key — never put that one in frontend code)
@@ -128,6 +128,13 @@ When you deploy to Vercel/Netlify (see section 4), add the same two variables �
 ### A note on access control
 
 The SQL policies in `supabase/schema.sql` allow anyone holding your app's anon key (i.e. anyone who can load the deployed site) to read and write the data — there's no login. That's fine for an internal tool shared via a private link with a shift team, which is what this app is. If you later need to restrict who can submit reports, add Supabase Auth and tighten the policies in `schema.sql` to require an authenticated user.
+
+### Photos on breakdown reports
+
+The Report Breakdown form lets people attach a photo, resized/compressed in the browser before it's saved anywhere (keeps things fast on a bad underground signal). Where it ends up depends on the mode from section 5:
+
+- **Live — shared (Supabase):** photos upload to the `breakdown-photos` bucket created by `schema.sql` and are stored as a public URL on the record.
+- **Local only:** there's no real storage backend, so the photo is inlined directly into the record as a compressed image. This works fine for trying things out, but localStorage only holds a few MB total, so it's not meant for heavy day-to-day photo use — that's what the Supabase setup in section 5 is for.
 
 ## 6. Seed data
 
