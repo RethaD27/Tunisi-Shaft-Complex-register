@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
-  Wrench, Search, CheckCircle2, AlertTriangle, Clock3, Radio,
-  ChevronDown, X, Loader2
+  Search, CheckCircle2, AlertTriangle, Clock3,
+  ChevronDown, X, Loader2, Camera
 } from 'lucide-react';
 
+// Kept as the original internal key name so any breakdown data already
+// collected (including while this was briefly a multi-shaft build) keeps
+// showing up here without needing a migration. It's just a storage key,
+// not shown anywhere in the UI.
 const STORAGE_KEY = 'tunisi-11shaft-breakdowns';
 
 const EQUIPMENT = ['Winch', 'Loco', 'Conveyor', 'Pump', 'Fan', 'Crane', 'Mini-sub', 'Phone'];
@@ -94,7 +98,7 @@ function generateSeed() {
         shift,
         reportedBy: pick(OPERATORS),
         reportedAt,
-        status, attendedAt, attendedBy, fixedAt, fixedBy, action,
+        status, attendedAt, attendedBy, fixedAt, fixedBy, action, photoUrl: null,
       });
     }
   });
@@ -119,25 +123,97 @@ function fmtHours(h) {
   return String(Math.round(h));
 }
 
+// Shrinks a photo client-side before it ever gets uploaded/stored — phone
+// camera photos from underground can be several MB each; this keeps things
+// fast on a bad signal and cheap in Supabase Storage / localStorage.
+// Resolves to a JPEG Blob capped at maxDim on its longest edge.
+function resizeImageFile(file, maxDim = 1280, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new window.Image();
+    img.onload = () => {
+      let { width, height } = img;
+      if (width > height && width > maxDim) {
+        height = Math.round((height * maxDim) / width);
+        width = maxDim;
+      } else if (height >= width && height > maxDim) {
+        width = Math.round((width * maxDim) / height);
+        height = maxDim;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        URL.revokeObjectURL(objectUrl);
+        if (blob) resolve(blob); else reject(new Error('Could not process image'));
+      }, 'image/jpeg', quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(objectUrl); reject(new Error('Could not load image')); };
+    img.src = objectUrl;
+  });
+}
+
 const STATUS_META = {
   awaiting: { label: 'AWAITING ATTENDANCE', color: '#E2685F', bg: 'rgba(226,104,95,0.14)' },
   not_fixed: { label: 'NOT FIXED', color: '#E0A640', bg: 'rgba(224,166,64,0.14)' },
   fixed: { label: 'FIXED', color: '#34C98D', bg: 'rgba(52,201,141,0.14)' },
 };
 
+function computeStats(breakdowns, nowTick) {
+  const total = breakdowns.length;
+  const awaiting = breakdowns.filter(r => r.status === 'awaiting').length;
+  const followUp = breakdowns.filter(r => r.status === 'not_fixed').length;
+  const fixed = breakdowns.filter(r => r.status === 'fixed').length;
+  const fixedRate = total ? (fixed / total) * 100 : 0;
+  const totalDowntime = breakdowns.reduce((sum, r) => {
+    const end = r.status === 'fixed' ? r.fixedAt : nowTick;
+    return sum + hoursBetween(r.reportedAt, end);
+  }, 0);
+  const repairTimes = breakdowns.filter(r => r.status === 'fixed' && r.attendedAt && r.fixedAt)
+    .map(r => hoursBetween(r.attendedAt, r.fixedAt) * 60);
+  const avgRepairMin = repairTimes.length ? repairTimes.reduce((a,b)=>a+b,0) / repairTimes.length : 0;
+
+  const byEquipCount = {};
+  const byEquipDowntime = {};
+  EQUIPMENT.forEach(e => { byEquipCount[e] = 0; byEquipDowntime[e] = 0; });
+  breakdowns.forEach(r => {
+    byEquipCount[r.equipment] = (byEquipCount[r.equipment] || 0) + 1;
+    const end = r.status === 'fixed' ? r.fixedAt : nowTick;
+    byEquipDowntime[r.equipment] = (byEquipDowntime[r.equipment] || 0) + hoursBetween(r.reportedAt, end);
+  });
+
+  return { total, awaiting, followUp, fixed, fixedRate, totalDowntime, avgRepairMin, byEquipCount, byEquipDowntime };
+}
+
+function computeAssets(breakdowns, nowTick) {
+  const map = new Map();
+  const sorted = [...breakdowns].sort((a, b) => a.reportedAt - b.reportedAt);
+  sorted.forEach(r => {
+    const prev = map.get(r.assetId);
+    const count = (prev ? prev.count : 0) + 1;
+    map.set(r.assetId, { assetId: r.assetId, equipment: r.equipment, level: r.level, place: r.place, latest: r, count });
+  });
+  return Array.from(map.values()).map(a => {
+    let status = 'operational';
+    if (a.latest.status === 'awaiting') status = 'awaiting';
+    else if (a.latest.status === 'not_fixed') status = 'needs_repair';
+    const end = a.latest.status === 'fixed' ? a.latest.fixedAt : nowTick;
+    const hoursDown = status === 'operational' ? 0 : hoursBetween(a.latest.reportedAt, end);
+    return { ...a, status, hoursDown };
+  }).sort((a, b) => b.hoursDown - a.hoursDown);
+}
+
 export default function App() {
   const [breakdowns, setBreakdowns] = useState(null);
   const [tab, setTab] = useState('overview');
   const [nowTick, setNowTick] = useState(Date.now());
   const [toast, setToast] = useState(null);
-  const [mode, setMode] = useState('local'); // 'shared' (Supabase, live) or 'local' (this browser only)
+  const [mode, setMode] = useState('local'); // 'shared' (Supabase, live) or 'local'
 
+  useEffect(() => { load(); }, []);
   useEffect(() => {
-    load();
-    // If the storage backend supports realtime push (Supabase mode), subscribe
-    // so reports submitted by other people show up here without a reload.
-    // The localStorage fallback doesn't implement subscribe(), so this is a
-    // no-op there and the app just falls back to per-tab state only.
     let unsubscribe;
     if (window.storage && typeof window.storage.subscribe === 'function') {
       unsubscribe = window.storage.subscribe(STORAGE_KEY, true, (data) => {
@@ -175,63 +251,20 @@ export default function App() {
   }
 
   function updateRecord(id, patch) {
-    const next = breakdowns.map(r => r.id === id ? { ...r, ...patch } : r);
-    persist(next);
+    persist(breakdowns.map(r => r.id === id ? { ...r, ...patch } : r));
   }
-
   function addRecord(record) {
-    const next = [record, ...breakdowns];
-    persist(next);
+    persist([record, ...breakdowns]);
   }
 
-  const stats = useMemo(() => {
-    if (!breakdowns) return null;
-    const total = breakdowns.length;
-    const awaiting = breakdowns.filter(r => r.status === 'awaiting').length;
-    const followUp = breakdowns.filter(r => r.status === 'not_fixed').length;
-    const fixed = breakdowns.filter(r => r.status === 'fixed').length;
-    const fixedRate = total ? (fixed / total) * 100 : 0;
-    const totalDowntime = breakdowns.reduce((sum, r) => {
-      const end = r.status === 'fixed' ? r.fixedAt : nowTick;
-      return sum + hoursBetween(r.reportedAt, end);
-    }, 0);
-    const repairTimes = breakdowns.filter(r => r.status === 'fixed' && r.attendedAt && r.fixedAt)
-      .map(r => hoursBetween(r.attendedAt, r.fixedAt) * 60);
-    const avgRepairMin = repairTimes.length ? repairTimes.reduce((a,b)=>a+b,0) / repairTimes.length : 0;
+  // Hooks must run in the same order every render, so stats/assets are
+  // computed unconditionally here (with a safe empty-array fallback while
+  // still loading) rather than after the early-return below.
+  const safeBreakdowns = breakdowns || [];
+  const stats = useMemo(() => computeStats(safeBreakdowns, nowTick), [safeBreakdowns, nowTick]);
+  const assets = useMemo(() => computeAssets(safeBreakdowns, nowTick), [safeBreakdowns, nowTick]);
 
-    const byEquipCount = {};
-    const byEquipDowntime = {};
-    EQUIPMENT.forEach(e => { byEquipCount[e] = 0; byEquipDowntime[e] = 0; });
-    breakdowns.forEach(r => {
-      byEquipCount[r.equipment] = (byEquipCount[r.equipment] || 0) + 1;
-      const end = r.status === 'fixed' ? r.fixedAt : nowTick;
-      byEquipDowntime[r.equipment] = (byEquipDowntime[r.equipment] || 0) + hoursBetween(r.reportedAt, end);
-    });
-
-    return { total, awaiting, followUp, fixed, fixedRate, totalDowntime, avgRepairMin, byEquipCount, byEquipDowntime };
-  }, [breakdowns, nowTick]);
-
-  const assets = useMemo(() => {
-    if (!breakdowns) return [];
-    const map = new Map();
-    // sort ascending first so "latest" overwrite gives most recent record per asset
-    const sorted = [...breakdowns].sort((a, b) => a.reportedAt - b.reportedAt);
-    sorted.forEach(r => {
-      const prev = map.get(r.assetId);
-      const count = (prev ? prev.count : 0) + 1;
-      map.set(r.assetId, { assetId: r.assetId, equipment: r.equipment, level: r.level, place: r.place, latest: r, count });
-    });
-    return Array.from(map.values()).map(a => {
-      let status = 'operational';
-      if (a.latest.status === 'awaiting') status = 'awaiting';
-      else if (a.latest.status === 'not_fixed') status = 'needs_repair';
-      const end = a.latest.status === 'fixed' ? a.latest.fixedAt : nowTick;
-      const hoursDown = status === 'operational' ? 0 : hoursBetween(a.latest.reportedAt, end);
-      return { ...a, status, hoursDown };
-    }).sort((a, b) => b.hoursDown - a.hoursDown);
-  }, [breakdowns, nowTick]);
-
-  if (!breakdowns || !stats) {
+  if (!breakdowns) {
     return (
       <Shell>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300, color: '#8B95A1', gap: 10 }}>
@@ -298,9 +331,9 @@ function Header({ tab, setTab, mode }) {
         <h1 style={{
           fontFamily: "'Oswald', sans-serif", fontWeight: 700, fontSize: 30, letterSpacing: 0.2,
           margin: 0, lineHeight: 1.05, textTransform: 'uppercase',
-        }}>11 Shaft Complex</h1>
+        }}>Impala 11 Shaft</h1>
         <p style={{ margin: '6px 0 0', color: '#8B95A1', fontSize: 14 }}>
-          Asset &amp; Breakdown Register — Tunisi Digital Twin
+          Asset &amp; Breakdown Register — Impala Platinum
         </p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '10px 0 14px' }} title={
           isShared ? 'Connected to Supabase — every viewer shares this data live.' : 'Running on local browser storage only — data is not shared with other devices. See README to connect Supabase.'
@@ -590,6 +623,13 @@ function LogEntry({ r, nowTick, expanded, onToggleExpand, onUpdate, onToast }) {
         Level {r.level} · {r.place} · {r.category} · reported by <b style={{ color: '#C7CDD3' }}>{r.reportedBy}</b> at {fmtTime(r.reportedAt)} ({r.shift} shift)
       </div>
       <div style={{ fontSize: 13.5, color: '#DDE2E7', fontStyle: 'italic', marginBottom: 4 }}>{r.detail}</div>
+      {r.photoUrl && (
+        <a href={r.photoUrl} target="_blank" rel="noreferrer" style={{ display: 'inline-block', marginTop: 6 }}>
+          <img src={r.photoUrl} alt={`Photo attached to ${r.id}`} style={{
+            width: 72, height: 72, objectFit: 'cover', borderRadius: 8, border: '1px solid #262B32', display: 'block',
+          }} />
+        </a>
+      )}
       {r.status === 'fixed' && r.action && (
         <div style={{ fontSize: 13, color: '#8B95A1', marginTop: 6 }}>Action: {r.action} by {r.fixedBy}</div>
       )}
@@ -677,10 +717,42 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
   const [category, setCategory] = useState('');
   const [detail, setDetail] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [photoBlob, setPhotoBlob] = useState(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const fileInputRef = React.useRef(null);
 
   function reset() {
     setLevel(''); setSection(''); setEquipment(''); setAssetId('');
     setReportedBy(''); setCategory(''); setDetail('');
+    clearPhoto();
+  }
+
+  function clearPhoto() {
+    if (photoPreview) URL.revokeObjectURL(photoPreview);
+    setPhotoBlob(null);
+    setPhotoPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  async function handleFileChange(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      onToast('Please choose an image file');
+      return;
+    }
+    setPhotoBusy(true);
+    try {
+      const resized = await resizeImageFile(file);
+      if (photoPreview) URL.revokeObjectURL(photoPreview);
+      setPhotoBlob(resized);
+      setPhotoPreview(URL.createObjectURL(resized));
+    } catch (err) {
+      onToast('Could not process that photo — try another');
+    } finally {
+      setPhotoBusy(false);
+    }
   }
 
   async function submit() {
@@ -688,12 +760,23 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
       onToast('Fill in all fields before submitting'); return;
     }
     setSubmitting(true);
+
+    let photoUrl = null;
+    if (photoBlob) {
+      try {
+        photoUrl = await window.storage.uploadImage(photoBlob);
+      } catch (err) {
+        onToast('Photo failed to upload — report submitted without it');
+      }
+    }
+
     const record = {
       id: `BD-${pad(60000 + existingCount + 1, 5)}`,
       equipment, assetId: assetId.trim().toUpperCase(), level: Number(level), section: section.trim() || '—',
       place, category, detail: detail.trim(), shift, reportedBy: reportedBy.trim(),
       reportedAt: Date.now(), status: 'awaiting',
       attendedAt: null, attendedBy: null, fixedAt: null, fixedBy: null, action: null,
+      photoUrl,
     };
     onSubmit(record);
     onToast('Report submitted — added to the live log');
@@ -787,15 +870,43 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
 
         <div>
           <FieldLabel>Photo</FieldLabel>
-          <div style={{
-            border: '1px dashed #2B3038', borderRadius: 10, padding: '18px 14px', textAlign: 'center',
-            color: '#5A6470', fontSize: 13, background: '#0F1216',
-          }}>Photo attachments — coming soon. Data-only reporting works now.</div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={handleFileChange}
+            style={{ display: 'none' }}
+          />
+          {photoPreview ? (
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: 12, border: '1px solid #262B32',
+              borderRadius: 10, padding: 10, background: '#0F1216',
+            }}>
+              <img src={photoPreview} alt="Selected photo preview" style={{
+                width: 56, height: 56, objectFit: 'cover', borderRadius: 8, flexShrink: 0,
+              }} />
+              <div style={{ fontSize: 13, color: '#AEB6BF', flex: 1 }}>Photo attached</div>
+              <button type="button" onClick={clearPhoto} style={{
+                background: 'transparent', border: 'none', color: '#8B95A1', cursor: 'pointer', padding: 6,
+              }} title="Remove photo"><X size={16} /></button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={photoBusy} style={{
+              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              border: '1px dashed #2B3038', borderRadius: 10, padding: '18px 14px',
+              color: photoBusy ? '#5A6470' : '#8B95A1', fontSize: 13.5, fontWeight: 600, background: '#0F1216',
+              cursor: photoBusy ? 'default' : 'pointer', fontFamily: 'inherit',
+            }}>
+              {photoBusy ? <Loader2 size={16} className="tr-spin" /> : <Camera size={16} />}
+              {photoBusy ? 'Processing photo…' : 'Add a photo'}
+            </button>
+          )}
         </div>
 
-        <button type="button" onClick={submit} disabled={submitting} style={{
-          ...primaryBtnStyle, padding: '14px 0', fontSize: 15, borderRadius: 10, opacity: submitting ? 0.7 : 1,
-        }}>{submitting ? 'Submitting…' : 'Submit report'}</button>
+        <button type="button" onClick={submit} disabled={submitting || photoBusy} style={{
+          ...primaryBtnStyle, padding: '14px 0', fontSize: 15, borderRadius: 10, opacity: (submitting || photoBusy) ? 0.7 : 1,
+        }}>{submitting ? (photoBlob ? 'Uploading photo…' : 'Submitting…') : 'Submit report'}</button>
         <div style={{ fontSize: 12.5, color: '#5A6470', textAlign: 'center', marginTop: -8 }}>
           Reports go straight into the live breakdown log.
         </div>
@@ -807,7 +918,7 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
 function Footer() {
   return (
     <div style={{ padding: '4px 16px 28px', textAlign: 'center', color: '#4A525C', fontSize: 12, lineHeight: 1.6 }}>
-      11 Shaft Complex Register — built for Tunisi field teams · data entered here is shared live with every viewer
+      Impala 11 Shaft Register — part of Impala Platinum's asset digital twin · data entered here is shared live with every viewer
     </div>
   );
 }
