@@ -9,7 +9,7 @@ tunisi-app/
 ├── index.html          # HTML entry point
 ├── package.json         # dependencies + scripts
 ├── vite.config.js       # build tool config
-├── .env.example         # copy to .env and fill in your Supabase credentials
+├── .env         # copy to .env and fill in your Supabase credentials
 ├── .gitignore
 ├── README.md
 ├── supabase/
