@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Search, CheckCircle2, AlertTriangle, Clock3,
-  ChevronDown, X, Loader2, Camera
+  ChevronDown, X, Loader2, Camera, Images
 } from 'lucide-react';
 
 // Kept as the original internal key name so any breakdown data already
@@ -720,7 +720,8 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
   const [photoBlob, setPhotoBlob] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [photoBusy, setPhotoBusy] = useState(false);
-  const fileInputRef = React.useRef(null);
+  const cameraInputRef = React.useRef(null);
+  const galleryInputRef = React.useRef(null);
 
   function reset() {
     setLevel(''); setSection(''); setEquipment(''); setAssetId('');
@@ -732,7 +733,8 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
     setPhotoBlob(null);
     setPhotoPreview(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (cameraInputRef.current) cameraInputRef.current.value = '';
+    if (galleryInputRef.current) galleryInputRef.current.value = '';
   }
 
   async function handleFileChange(e) {
@@ -870,11 +872,22 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
 
         <div>
           <FieldLabel>Photo</FieldLabel>
+          {/* Two separate inputs on purpose: `capture` jumps straight to the
+              camera on many mobile browsers and can hide the gallery option
+              entirely, so gallery access gets its own input with no
+              `capture` attribute at all. */}
           <input
-            ref={fileInputRef}
+            ref={cameraInputRef}
             type="file"
             accept="image/*"
             capture="environment"
+            onChange={handleFileChange}
+            style={{ display: 'none' }}
+          />
+          <input
+            ref={galleryInputRef}
+            type="file"
+            accept="image/*"
             onChange={handleFileChange}
             style={{ display: 'none' }}
           />
@@ -892,15 +905,26 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
               }} title="Remove photo"><X size={16} /></button>
             </div>
           ) : (
-            <button type="button" onClick={() => fileInputRef.current && fileInputRef.current.click()} disabled={photoBusy} style={{
-              width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              border: '1px dashed #2B3038', borderRadius: 10, padding: '18px 14px',
-              color: photoBusy ? '#5A6470' : '#8B95A1', fontSize: 13.5, fontWeight: 600, background: '#0F1216',
-              cursor: photoBusy ? 'default' : 'pointer', fontFamily: 'inherit',
-            }}>
-              {photoBusy ? <Loader2 size={16} className="tr-spin" /> : <Camera size={16} />}
-              {photoBusy ? 'Processing photo…' : 'Add a photo'}
-            </button>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button type="button" onClick={() => cameraInputRef.current && cameraInputRef.current.click()} disabled={photoBusy} style={{
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                border: '1px dashed #2B3038', borderRadius: 10, padding: '16px 10px',
+                color: photoBusy ? '#5A6470' : '#8B95A1', fontSize: 13.5, fontWeight: 600, background: '#0F1216',
+                cursor: photoBusy ? 'default' : 'pointer', fontFamily: 'inherit',
+              }}>
+                {photoBusy ? <Loader2 size={16} className="tr-spin" /> : <Camera size={16} />}
+                Take photo
+              </button>
+              <button type="button" onClick={() => galleryInputRef.current && galleryInputRef.current.click()} disabled={photoBusy} style={{
+                flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                border: '1px dashed #2B3038', borderRadius: 10, padding: '16px 10px',
+                color: photoBusy ? '#5A6470' : '#8B95A1', fontSize: 13.5, fontWeight: 600, background: '#0F1216',
+                cursor: photoBusy ? 'default' : 'pointer', fontFamily: 'inherit',
+              }}>
+                {photoBusy ? <Loader2 size={16} className="tr-spin" /> : <Images size={16} />}
+                Choose from gallery
+              </button>
+            </div>
           )}
         </div>
 
