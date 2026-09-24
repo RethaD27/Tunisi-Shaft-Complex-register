@@ -768,7 +768,8 @@ function ReportForm({ onSubmit, onToast, existingCount }) {
       try {
         photoUrl = await window.storage.uploadImage(photoBlob);
       } catch (err) {
-        onToast('Photo failed to upload — report submitted without it');
+        console.error('[impala-11shaft] Photo upload failed:', err);
+        onToast('Photo failed to upload — report submitted without it (see console for details)');
       }
     }
 
