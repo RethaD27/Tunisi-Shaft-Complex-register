@@ -7,21 +7,28 @@
 //    Postgres table and pushed to every connected browser in real time via
 //    Supabase Realtime, so a report submitted on one device appears on every
 //    other open tab/device within a second or two, with no reload needed.
+//    Photos uploaded via the Report Breakdown form go to a Supabase Storage
+//    bucket (see supabase/schema.sql) and are stored as a public URL.
 //
 // 2. LOCAL ONLY (localStorage) — used automatically when Supabase isn't
 //    configured, e.g. before you've set up a project, or if you just want to
 //    poke around locally. Data stays on that one browser. Also syncs between
 //    tabs on the same browser via the native `storage` event, for convenience.
+//    Photos in this mode are inlined as base64 data URIs directly in the
+//    record — fine for local testing, but localStorage only holds a few MB
+//    total, so this isn't meant for real day-to-day use with many photos.
 //
-// App.jsx only ever calls window.storage.get/set/delete/list/subscribe — it
-// doesn't know or care which mode is active. `window.storage.mode` is read
-// by App.jsx purely to show the "Live — shared" vs "Local only" badge.
+// App.jsx only ever calls window.storage.get/set/delete/list/subscribe/
+// uploadImage — it doesn't know or care which mode is active.
+// `window.storage.mode` is read by App.jsx purely to show the
+// "Live — shared" vs "Local only" badge.
 
 import { createClient } from '@supabase/supabase-js';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const TABLE = 'kv_store';
+const PHOTO_BUCKET = 'breakdown-photos';
 
 const hasSupabase = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
@@ -91,6 +98,20 @@ if (hasSupabase) {
         .subscribe();
       return () => { supabase.removeChannel(channel); };
     },
+    // Uploads a File/Blob (already resized client-side by App.jsx) to
+    // Supabase Storage and returns a public URL to store on the record.
+    async uploadImage(fileOrBlob) {
+      const ext = (fileOrBlob.name && fileOrBlob.name.includes('.'))
+        ? fileOrBlob.name.split('.').pop().toLowerCase()
+        : 'jpg';
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext || 'jpg'}`;
+      const { error } = await supabase.storage
+        .from(PHOTO_BUCKET)
+        .upload(path, fileOrBlob, { contentType: fileOrBlob.type || 'image/jpeg', upsert: false });
+      if (error) throw error;
+      const { data } = supabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
+      return data.publicUrl;
+    },
   };
 } else {
   const NAMESPACE = 'tunisi-kv';
@@ -135,6 +156,16 @@ if (hasSupabase) {
       };
       window.addEventListener('storage', handler);
       return () => window.removeEventListener('storage', handler);
+    },
+    // No object storage locally, so just inline the image as a data URI.
+    // Fine for local testing; not meant for heavy real-world photo use.
+    async uploadImage(fileOrBlob) {
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('Could not read image'));
+        reader.readAsDataURL(fileOrBlob);
+      });
     },
   };
 
